@@ -1,0 +1,529 @@
+
+
+###################################################
+# Sonoff S4 Pro
+###################################################
+#   the board switches S6 and K5 must be set!
+#   https://ewelink.coolkit.cc/?p=458
+#   s6: 1 ( we make software interlock )
+#   K5: 1,2,3,4: 1 - self locking
+
+###################################################
+# Free pins on ESP8284 - ITEAD's PSF-A85
+###################################################
+#     https://www.itead.cc/wiki/PSF-A85
+#
+# PIN	Function	Description
+# 1	  ANT	      WiFi Antenna
+# 2	  ADC	      ADC, input range: 0V-1V；
+# 3	  EN	      Chip enable terminal. Active high: chip works normally;
+#               Active low: chip close, very small current.
+# 4	  GPIO16	  GPIO16
+# 5	  GPIO14	  GPIO14; HSPI_CLK
+# 6	  GPIO12	  GPIO12; HSPI_MISO
+# 7	  GPIO13	  GPIO13; HSPI_MOSI; UART0_CTS
+# 8	  GPIO15	  GPIO15; HSPI_CS; UART0_RTS
+# 9	  GPIO2	    Also used as a programming flash UART1_TX；GPIO2
+# 10  GPIO0	    GPIO0; SPI_CS2
+# 11  GPIO4	    GPIO4
+# 12  GND	      GND
+# 13  GPIO9	    PIHD；HSPIHD；GPIO9
+# 14  GPIO10	 SPIWP；HSPIWP；GPIO10
+# 15  GPIO11	 SPI_CS0；GPIO11
+# 16  GPIO6	   SPI_CLK；GPIO6
+# 17  GPIO7	   SPI_MSIO；GPIO7
+# 18  GPIO8	   SPI_MOSI；GPIO8
+# 19  GPIO5	   GPIO5
+# 20  GND	     GND
+# 21  RX	     Also used as a programming flash UART Rx；GPIO3
+# 22  TX	     Also used as a programming flash UART Tx ；GPIO1；SPI_CS1
+# 23  3V3	     Power supply
+# 24  RESET	   External reset（low active）
+
+# Free pins on connectors, used only for flashing 
+# SDA - pin 9  GPIO2  J1-1
+# RX  - pin 21 GPIO3  J1-3
+# TX  - pin 22 GPIO2  J1-4
+# Vcc 3.3             J1-2
+# GND                 J1-5
+
+###################################################
+# Climate component documentation
+#   https://esphome.io/components/climate/index.html
+
+###################################################
+# ESPHome modularisation 
+#   substitutions,  packages
+#   https://esphome.io/guides/configuration-types.html?highlight=substitution#command-line-substitutions
+
+
+###################################################
+esphome:
+###################################################
+  name: ${node_name}
+  platform: ESP8266
+  board: esp01_1m 
+#--------------------------------------------------
+  on_boot:
+    then:
+    #- script.execute: fan_low_speed       # default to low speed fan
+    - script.execute: master_switch_off   # just not start jet
+#--------------------------------------------------
+  on_loop:
+    then:
+      - if:
+          condition:
+            # fan is running but but might be necessary to chage speed
+            # one cycle 16 ms, 60 cca 1 sec
+            lambda: |- 
+              id(cycle) -= 1;
+              if (id(cycle) == 0) {
+                id(cycle) =${change_speed_cycle};
+                id(check_now) = true;
+              }
+              return id(check_now);  
+              
+          then:
+            - logger.log: " Checking if speed needs to change"
+            - lambda: |-
+                id(check_now) = false;
+            - script.execute: change_fan
+
+      - if:
+          condition:
+            # fan is idle but bangbang is asking for heat and the heating water temp is ok
+            lambda: |- 
+              return  id(running) == false  &&  id(fan_speed) != 0 && id(t_heat_source).state > ${min_temp};
+          then:
+            - logger.log: "Starting fan"
+            - script.execute: change_fan
+            - script.execute: master_switch_on
+            - lambda: |- 
+                id(running) = true;
+          else:
+            - if:
+                condition:
+                  lambda: |- 
+                    return  id(t_heat_source).has_state() && id(t_heat_source).state < ${min_temp};
+                then:
+                  - logger.log: "Heat source too cool"    
+            - if:
+                condition:
+                  # fan is running but bangbang would stopp heating
+                  lambda: |- 
+                    return  id(running) == true  &&  id(fan_speed) == 0;
+                then:
+                  - logger.log: "Stopping fan"
+                  - script.execute: master_switch_off
+                  - lambda: |- 
+                      id(running) = false;
+
+###################################################
+wifi:
+###################################################
+  networks: !include '../Configs/wifi.yaml'
+  
+  ap:  # Enable fallback hotspot in case wifi connection fails
+    ssid:     ${node_name} Fallback Hotspot
+    password: ${fallback_hotspot_pw}
+
+  manual_ip:
+    static_ip: ${static_ip}
+    gateway:   ${gateway}
+    dns1:      ${gateway}
+    subnet:    255.255.255.0
+
+###################################################
+web_server:
+  port: 80
+captive_portal:  
+logger:
+  level: ${logger_level}
+api:
+  password: ${api_pwd}
+ota:
+  password: ${ota_pwd}
+
+###################################################
+sensor:
+###################################################
+
+  # current tempreature to regulate
+  - platform: homeassistant
+    name: ${HA_t_to_regulate}
+    entity_id: ${HA_t_to_regulate_entity_id}
+    id:  t_to_regulate
+    internal: True
+
+  # this has to be warm enough to run the fan  
+  - platform: homeassistant               
+    name: ${HA_t_heat_source}
+    entity_id: ${HA_t_heat_source_entity_id}
+    id: t_heat_source
+    internal: True
+      
+  # from HA to temporary change fan speed   
+  # - platform: homeassistant               
+  #   name: hass_fan_speed                    # this is the name in HA
+  #   entity_id: input_number.hass_fan_speed  # this is the data source in HA
+  #   id: hass_fan_speed
+
+  # current fan speed to HA 
+  - platform: template
+    name: ${node_name} Fan Speed
+    lambda: |-
+      return id(fan_speed);
+    update_interval: 5s
+
+####################################################   
+# Global variables
+globals:
+####################################################  
+   
+    # bang bang asking for heating
+    # 0: off, 1,2,3 fan speed
+  - id: fan_speed
+    type: int
+    restore_value: no
+    initial_value: '0'
+    
+    # fan is running
+  - id: running
+    type: bool
+    restore_value: no
+    initial_value: '0'
+
+  - id: cycle
+    type: int
+    restore_value: no
+    initial_value: ${change_speed_cycle}
+
+  - id: check_now
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: deltaT
+    type: float
+    restore_value: no
+    initial_value: '0.0' 
+
+###################################################
+climate:
+###################################################
+
+  - platform: bang_bang
+    name: ${node_name} Thermostat
+    id: thermostat
+    sensor: t_to_regulate
+    visual:
+      min_temperature: 15 °C
+      max_temperature: 25 °C
+      temperature_step: 0.5 °C
+
+    default_target_temperature_low:  19 °C
+    default_target_temperature_high: 20 °C
+
+    heat_action:
+      - script.execute: start_fan
+    idle_action:
+      - script.execute: stop_fan   
+    # cool_action:
+    #   - script.execute: start_fan 
+
+
+###################################################
+script:
+###################################################
+# switching onboard relays 
+#    relay1    relay2  relay3   relay4
+#    master    slow    nedium   high 
+
+#--------------------------------------------------
+# setting the master switch
+  - id: master_switch_on
+    then:
+      - delay: 1000ms
+      - switch.turn_on: relay_1       # main switch, passes AC to other relays 
+
+  - id: master_switch_off
+    then:
+      - delay: 1000ms
+      - switch.turn_off: relay_1       # main switch, passes AC to other relays 
+
+  - id: master_switch_toggle
+    then:
+      - delay: 1000ms
+      - switch.toggle: relay_1        # main switch, passes AC to other relays 
+
+#--------------------------------------------------
+# switching relays on interlocked way
+# delays are just a security measure, 
+# if something goes wrong slow down switching
+
+  - id: fan_low_speed
+    then:
+      - switch.turn_off: relay_3
+      - delay: 500ms
+      - switch.turn_off: relay_4
+      - delay: 500ms
+      - switch.turn_on:  relay_2      # slow fan speed
+
+  - id: fan_medium_speed
+    then:
+      - switch.turn_off: relay_2
+      - delay: 500ms
+      - switch.turn_off: relay_4
+      - delay: 500ms
+      - switch.turn_on:  relay_3    # medium fan speed
+
+  - id: fan_high_speed
+    then:
+      - switch.turn_off: relay_2
+      - delay: 500ms
+      - switch.turn_off: relay_3
+      - delay: 500ms
+      - switch.turn_on:  relay_4    # high speed
+
+
+#--------------------------------------------------
+# starting/stopping the fan if heat requested  
+# called by the bangbang controller 
+# 0: off, 1,2,3 slow, med, high
+
+  - id: start_fan
+    then:
+    - lambda: |-
+        id(fan_speed) = 1;
+    - logger.log: "In start_fan, turning on"    
+
+  - id: stop_fan
+    then:
+    # turn the flag off for the on_loop script
+    - lambda: |-
+        id(fan_speed) = 0;
+    - logger.log: "In stop_fan, turning off"       
+
+#--------------------------------------------------
+# set fan speed variable fan_speed according delta T 
+# between requested and current temp
+# the real speed change will hapen in the on_loop part
+
+# dT < 0                   no speed,    0   no cooling function jet
+# dT < dT_low              low speed    1
+# dT_low < dT < dT_high    medium speed 2  
+# dT > dT_high             high speed   3
+
+  - id: change_fan
+    then:
+      - lambda: |-
+          id(deltaT) = id(thermostat).target_temperature_high - id(thermostat).current_temperature;
+
+      - logger.log:
+          format: "In change_fan, target temp: %.1f current temp:  %.1f, dT: %.1f  "
+          args: [ 'id(thermostat).target_temperature', 'id(thermostat).current_temperature', id(deltaT) ]
+  
+      # set the fan speed for the on_loop script
+      #------------------------------------------------
+      # dT < 1
+      - if:
+          condition:
+            lambda: |- 
+              return id(deltaT) > 0  &&  id(deltaT) < ${dT_low};
+          then:    
+            - if:
+                condition:
+                  lambda: |-
+                    return id(fan_speed) != 1;             
+                then:
+                - lambda: |- 
+                    id(fan_speed) = 1;
+                - script.execute: fan_low_speed
+                - logger.log: "Changing fan speed to 1"
+    #------------------------------------------------
+    # dT > 1, dT < 2
+          else:  
+            - if:
+                condition:
+                    lambda: |- 
+                      return  id(deltaT) > ${dT_low} && id(deltaT) < ${dT_high};
+                then:
+                  - if:
+                      condition:
+                        lambda: |-
+                          return id(fan_speed) != 2;             
+                      then:
+                      - lambda: |- 
+                          id(fan_speed) = 2;
+                      - script.execute: fan_medium_speed
+                      - logger.log: "Changing fan speed to 2"
+    #------------------------------------------------
+    # dT > 2
+                else:
+                  - if:
+                      condition:
+                          lambda: |- 
+                            return  id(deltaT)  > ${dT_high};
+                      then:
+                        - if:
+                            condition:
+                              lambda: |-
+                                return id(fan_speed) != 3;             
+                            then:
+                            - lambda: |- 
+                                id(fan_speed) = 3;
+                            - script.execute: fan_high_speed
+                            - logger.log: "Changing fan speed to 3"
+    #-----------------------------------------------
+    # dT < 0
+                      else: 
+                        - if:
+                            condition:
+                                lambda: |- 
+                                  return  id(deltaT) < 0;
+                            then:
+                             - lambda: |- 
+                                id(fan_speed) = 0;
+                             - logger.log: "Changing fan speed to 0" 
+
+###################################################
+# 4 on-board relays
+switch:
+###################################################
+
+  - platform: gpio
+    id: relay_1
+    name: ${node_name} Relay 1
+    pin: GPIO12
+    restore_mode: always off  # on boot, always start as off - failsafe 
+
+  - platform: gpio
+    id: relay_2
+    name: ${node_name} Relay 2
+    pin: GPIO5
+    restore_mode: always off  # on boot, always start as off - failsafe 
+
+  - platform: gpio
+    id: relay_3
+    name: ${node_name} Relay 3
+    pin: GPIO4
+    restore_mode: always off  # on boot, always start as off - failsafe 
+
+  - platform: gpio
+    id: relay_4
+    name: ${node_name} Relay 4
+    pin: GPIO15
+    restore_mode: always off  # on boot, always start as off - failsafe 
+    
+    
+          
+###################################################
+# 4 buttons, connection state
+binary_sensor:
+###################################################
+# Button 1: fan master switch
+# Button 2,3,4: fan speed low, medium, high
+
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: True
+    name: ${node_name} Button 1
+    on_press:
+      - script.execute: master_switch_toggle
+
+  - platform: gpio
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: True
+    name: ${node_name} Button 2
+    on_press:
+      - logger.log: "in button 2 on_press" 
+      - script.execute: fan_low_speed
+
+  - platform: gpio
+    pin:
+      number: GPIO10
+      mode: INPUT_PULLUP
+      inverted: True
+    name: ${node_name} Button 3
+    on_press:
+      - script.execute: fan_medium_speed
+
+  - platform: gpio
+    pin:
+      number: GPIO14
+      mode: INPUT_PULLUP
+      inverted: True
+    name: ${node_name} Button 4
+    on_press:
+      - script.execute: fan_high_speed
+
+#--------------------------------------------   
+# connected or not
+  - platform: status
+    name: ${node_name} Status
+
+###################################################
+output:
+###################################################
+  # Register the blue LED as a dimmable output ....
+  - platform: esp8266_pwm
+    id: blue_led
+    pin: GPIO13
+    inverted: True
+
+###################################################
+light:
+###################################################
+  # ... and then make a light out of it.
+  - platform: monochromatic
+    name: ${node_name} Blue LED
+    output: blue_led
+    
+
+
+###################################################
+# Ötletek
+###################################################
+
+# ötletek - idő bemenet, éjszaka csak lassan mehet
+# auto sebesség ovveride kintről
+# kék led használat pl hass kapcsolat
+# rgb led illesztés
+# lcd illesztés
+# gombok átdefiniálása
+# eljárások exportálása pl. halk mód, ... ? 
+
+# ha nincs kapcsolat v vmely hőmérséklet, ne csináljon semmit, villogjon a kék
+# ne kapcsoljon  semmit amig nem tudni mi lesz
+ # mode bemenet: low/high/..
+ # night/day/away
+ 
+# speed override x időre
+
+
+# akkor is megy, ha nincs érvényes szoba hőmérséklet
+
+# bekapcsolások ideje és köztes idő számolása, publikálása
+ 
+ #  hass panelon kikapcsolva, mégis megy
+ #.  kikapcsolom, 25-sec újraindul
+ #.  ki van kapcsolva, lehül, hogy határokba bekerül: elindul
+ # bejövö állapot bangbang ki/be van kapcsolva, set_fan
+
+# // Away mode, type: bool
+# id( ${node_name}).away
+
+#// Current mode, type: ClimateMode (enum) OFF, AUTO, COOL, HEAT
+#id( ${node_name}).mode
+# ezek felülírják a hőmérsékletr szabályzást ?
+
+# kellene egy globa megyy/nem megy, amit több feltétel kapcsolhat és a set_fan veszi figyelembe
+
+# kapcsolat problémák: nincs wifi kapcsolat, nincs érvényes bemenő hőmérséklet
+   
+    
+    

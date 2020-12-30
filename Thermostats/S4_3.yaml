@@ -1,0 +1,6 @@
+
+substitutions: 
+  !include '../Configs/S4_3_config.yaml'
+
+packages:
+  esphome: !include '../Cores/Sonoff_4_thermostat_core.yaml'

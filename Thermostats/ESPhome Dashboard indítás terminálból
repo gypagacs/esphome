@@ -1,0 +1,18 @@
+#ESPhome dashboard indítás terminálból, T77 ház termosztátok
+        esphome /Users/gypagacs/Dropbox/Dev/SW_Design/ESPHome/T77_haz/Thermostats  dashboard
+
+#ESPhome dashboard indítás terminálból, régi vegyes eszközök
+        esphome /Users/gypagacs/Dropbox/Dev/SW_Design/ESPHome/esphome_config/ dashboard
+
+# update to the latest version
+	pip3 install -U esphome
+
+# update to the latest beta version
+	pip3 install --pre -U esphome
+
+# !!! esphome pyserial nem big sur compatibilis,
+# install után upgredolni kell pyserialt
+#	pip3 install pyserial==v3.5b0
+
+
+# valami felülírta a Platformio Core-t, vscode-ból platformio upgrade és rendbejött

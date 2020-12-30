@@ -1,0 +1,33 @@
+node_name: 's4_1'
+gateway:   '192.168.1.1'
+static_ip: '192.168.1.60'
+fallback_hotspot_pw: 'IPptFVDdzuEn'
+logger_level: 'DEBUG' 
+
+api_pwd: 'esp_load'
+ota_pwd: 'esp_load'
+
+# connect local ids to HA entities
+# Local ids                  entities from Home Assistant
+HA_t_to_regulate:            'T fent háló'
+HA_t_to_regulate_entity_id:  'sensor.0x00158d0004641c49_temperature'
+
+#---------------------------------------------------
+HA_t_heat_source:            'T kazán előre'
+HA_t_heat_source_entity_id:  'sensor.kazan_1_elore'
+
+#---------------------------------------------------
+
+# minimum temperature of heat source to operate the fans 
+# it might be the heated water from the boiler, ar the hot air comming from the fan
+# this is just avoid running the fan if there is no heat source
+min_temp:                    '35'             
+change_speed_cycle:          '600'    # no of on_loop cycles to check if fan speed needs to change x 16 ms
+ 
+#---------------------------------------------------
+# temperature differences for 3 different fan speed
+# dT = Ttarget - Tcurrent 
+dT_low:  '1'    # dT below this, fan speed low
+dT_high: '2'    # dT abowe this fan speed high
+                # dT between the two speed is medium
+#---------------------------------------------------
